@@ -1,0 +1,11 @@
+{
+  "ci": "3d9e706b999c4a3c5c876ea6a08ecd9637cfdbad",
+  "patches": [
+    {
+      "name": "relay-sticker-keep-sticker",
+      "sha": "43637210a27acb3dbb6fa87002e5ba3cbbbe2ef2"
+    }
+  ],
+  "schema": 1,
+  "upstream": "b9ed336616b0b3551deded944294136e8531a377"
+}
