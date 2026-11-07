@@ -1,0 +1,120 @@
+name: Upstream Sync
+
+on:
+  schedule:
+    - cron: '42 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-sync-main
+  cancel-in-progress: false
+
+jobs:
+  replay:
+    if: github.repository == 'xz-dev/telegram'
+    runs-on: ubuntu-24.04
+    outputs:
+      changed: ${{ steps.replay.outputs.changed }}
+      source_sha: ${{ steps.replay.outputs.source_sha }}
+      version: ${{ steps.replay.outputs.version }}
+      expected_main: ${{ steps.replay.outputs.expected_main }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require authorized sync credentials
+        env:
+          PUSH_TOKEN: ${{ secrets.SYNC_WORKFLOW_TOKEN }}
+        run: |
+          test -n "$PUSH_TOKEN" || {
+            echo '::error::Configure SYNC_WORKFLOW_TOKEN with repository contents/workflows write permissions. No alternate credential will be used.'
+            exit 1
+          }
+      - name: Resolve inputs once and replay in an isolated clone
+        id: replay
+        env:
+          REBUILD_GPG_PRIVATE_KEY: ${{ secrets.REBUILD_GPG_PRIVATE_KEY }}
+          REBUILD_GPG_PASSPHRASE: ${{ secrets.REBUILD_GPG_PASSPHRASE }}
+          REBUILD_GPG_FINGERPRINT: ${{ vars.REBUILD_GPG_FINGERPRINT }}
+          REBUILD_GIT_NAME: ${{ vars.REBUILD_GIT_NAME }}
+          REBUILD_GIT_EMAIL: ${{ vars.REBUILD_GIT_EMAIL }}
+        run: |
+          set -euo pipefail
+          expected=$(git rev-parse HEAD)
+          echo "expected_main=$expected" >> "$GITHUB_OUTPUT"
+          git remote add upstream https://github.com/mautrix/telegram.git
+          git fetch upstream +refs/heads/main:refs/remotes/upstream/main
+          git fetch origin +refs/heads/ci:refs/remotes/origin/ci
+          upstream=$(git rev-parse upstream/main)
+          ci=$(git rev-parse origin/ci)
+          git show "$ci:scripts/rebuild.py" > "$RUNNER_TEMP/rebuild.py"
+          git show "$ci:scripts/setup-ci-signing.sh" > "$RUNNER_TEMP/setup-ci-signing.sh"
+          bash "$RUNNER_TEMP/setup-ci-signing.sh"
+          export GNUPGHOME="$RUNNER_TEMP/rebuild-gnupg"
+          args=(--source "$GITHUB_WORKSPACE" --upstream "$upstream" --ci "$ci")
+          while IFS= read -r patch; do
+            git fetch origin "+refs/heads/patch/$patch:refs/remotes/origin/patch/$patch"
+            args+=(--patch "$patch=$(git rev-parse "origin/patch/$patch")")
+          done < <(python3 "$RUNNER_TEMP/rebuild.py" --list-patches)
+          set +e
+          python3 "$RUNNER_TEMP/rebuild.py" "${args[@]}" --check-current "$expected"
+          status=$?
+          set -e
+          if [[ "$status" -eq 0 ]]; then
+            echo 'Exact upstream/ci/patch inputs are unchanged; no update or release.'
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          test "$status" -eq 1
+          candidate="$RUNNER_TEMP/candidate"
+          python3 "$RUNNER_TEMP/rebuild.py" "${args[@]}" --target "$candidate"
+          python3 "$candidate/scripts/release.py" prepare --source "$candidate" --output "$RUNNER_TEMP/source-input" > "$RUNNER_TEMP/prepared.json"
+          python3 -c 'import json,os; d=json.load(open(os.environ["RUNNER_TEMP"]+"/prepared.json")); open(os.environ["GITHUB_OUTPUT"],"a").write("source_sha="+d["source_commit"]+"\nversion="+d["version"]+"\nchanged=true\n")'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: steps.replay.outputs.changed == 'true'
+        with:
+          name: sync-source
+          path: ${{ runner.temp }}/source-input/
+          if-no-files-found: error
+          retention-days: 7
+
+  validate:
+    needs: replay
+    if: needs.replay.outputs.changed == 'true'
+    uses: ./.github/workflows/build-release.yml
+    with:
+      source_artifact: sync-source
+      source_sha: ${{ needs.replay.outputs.source_sha }}
+      version: ${{ needs.replay.outputs.version }}
+
+  update-main:
+    needs: [replay, validate]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: sync-source
+          path: ${{ runner.temp }}/source-input
+      - name: Update only the captured remote main
+        env:
+          PUSH_TOKEN: ${{ secrets.SYNC_WORKFLOW_TOKEN }}
+          EXPECTED_MAIN: ${{ needs.replay.outputs.expected_main }}
+          SOURCE_SHA: ${{ needs.replay.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test -n "$PUSH_TOKEN"
+          git fetch "$RUNNER_TEMP/source-input/source.bundle" HEAD
+          test "$(git rev-parse FETCH_HEAD)" = "$SOURCE_SHA"
+          git push --force-with-lease="refs/heads/main:$EXPECTED_MAIN" \
+            "https://x-access-token:$PUSH_TOKEN@github.com/$GITHUB_REPOSITORY.git" "$SOURCE_SHA:refs/heads/main"
