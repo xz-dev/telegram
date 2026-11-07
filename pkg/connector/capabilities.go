@@ -228,7 +228,7 @@ func viewLimitedFileCaps(base event.FileFeatureMap) event.FileFeatureMap {
 var telegramTimers = makeTimerList()
 
 func (tc *TelegramClient) GetCapabilities(ctx context.Context, portal *bridgev2.Portal) *event.RoomFeatures {
-	baseID := "fi.mau.telegram.capabilities.2026_10_29"
+	baseID := "fi.mau.telegram.capabilities.2026_10_29+relay_stickers"
 	feat := &event.RoomFeatures{
 		Formatting:          formattingCaps,
 		File:                fileCaps,
@@ -351,6 +351,9 @@ func (tc *TelegramClient) GetCapabilities(ctx context.Context, portal *bridgev2.
 	}
 
 	feat.ID = baseID
+	// bridgev2 must preserve sticker events; the connector formats other
+	// relayed messages and sends sticker attribution separately.
+	feat.PerMessageProfileRelay = true
 	return feat
 }
 
