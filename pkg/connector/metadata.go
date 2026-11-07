@@ -93,10 +93,11 @@ func (pm *PortalMetadata) SetIsForumGeneral(isForumGeneral bool) (changed bool) 
 }
 
 type MessageMetadata struct {
-	ViewLimited *event.BeeperViewLimitedMedia `json:"view_limited,omitempty"`
-	ContentHash []byte                        `json:"content_hash,omitempty"`
-	ContentURI  id.ContentURIString           `json:"content_uri,omitempty"`
-	Poll        *PollMetadata                 `json:"poll,omitempty"`
+	RelayAttributionID int                           `json:"relay_attribution_id,omitempty"`
+	ViewLimited        *event.BeeperViewLimitedMedia `json:"view_limited,omitempty"`
+	ContentHash        []byte                        `json:"content_hash,omitempty"`
+	ContentURI         id.ContentURIString           `json:"content_uri,omitempty"`
+	Poll               *PollMetadata                 `json:"poll,omitempty"`
 }
 
 type PollMetadata struct {

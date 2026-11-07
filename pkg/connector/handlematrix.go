@@ -537,7 +537,17 @@ func (tc *TelegramClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2
 
 	noWebpage := msg.Content.BeeperLinkPreviews != nil && len(msg.Content.BeeperLinkPreviews) == 0
 
-	message, entities := matrixfmt.Parse(ctx, tc.matrixParser, msg.Content, msg.Portal, tc.getMaxMessageLength(ctx, msg.Content.MsgType.IsMedia()))
+	// The connector owns relay formatting so bridgev2 preserves sticker events.
+	content := msg.Content
+	if msg.Event.Type != event.EventSticker {
+		content, err = tc.formatRelayMessage(content, msg.OrigSender)
+		if err != nil {
+			log.Err(err).Msg("Failed to format message for relaying")
+			return nil, err
+		}
+	}
+
+	message, entities := matrixfmt.Parse(ctx, tc.matrixParser, content, msg.Portal, tc.getMaxMessageLength(ctx, content.MsgType.IsMedia()))
 
 	replyTo := makeInputReplyTo(ctx, msg.ReplyTo, topicID)
 	randomID := parseRandomID(msg.InputTransactionID)
@@ -554,6 +564,15 @@ func (tc *TelegramClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2
 		mediaReq.Media, err = tc.transferMediaToTelegram(ctx, msg.Content, true, false, true)
 		if err != nil {
 			return nil, err
+		}
+		if msg.OrigSender != nil {
+			// The auxiliary mapping needs the sender ghost before its DB insert.
+			if _, err = tc.main.Bridge.GetGhostByID(ctx, tc.userID); err != nil {
+				return nil, err
+			}
+			return tc.sendRelaySticker(ctx, tc.client.API(), msg, mediaReq, func() (tg.InputMediaClass, error) {
+				return tc.transferMediaToTelegram(ctx, msg.Content, true, true, true)
+			})
 		}
 		updates, err = tc.client.API().MessagesSendMedia(ctx, mediaReq)
 		if tgerr.Is(err, tg.ErrFileReferenceExpired) {
@@ -578,7 +597,7 @@ func (tc *TelegramClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2
 		case event.MsgImage, event.MsgFile, event.MsgAudio, event.MsgVideo:
 			var media tg.InputMediaClass
 			forceDocument, _ := msg.Event.Content.Raw["fi.mau.telegram.force_document"].(bool)
-			media, err = tc.transferMediaToTelegram(ctx, msg.Content, false, false, forceDocument)
+			media, err = tc.transferMediaToTelegram(ctx, content, false, false, forceDocument)
 			if err != nil {
 				return nil, err
 			}
@@ -622,7 +641,7 @@ func (tc *TelegramClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2
 		log.Err(err).Msg("failed to send message to Telegram")
 		return nil, tc.humaniseSendError(err)
 	}
-	resp, _, err = tc.makeSendResponse(ctx, msg.Portal, updates, randomID, msg.Content.Body, contentURI)
+	resp, _, err = tc.makeSendResponse(ctx, msg.Portal, updates, randomID, content.Body, contentURI)
 	return
 }
 
@@ -796,6 +815,9 @@ func (tc *TelegramClient) HandleMatrixViewLimitedMedia(ctx context.Context, msg 
 }
 
 func (tc *TelegramClient) HandleMatrixEdit(ctx context.Context, msg *bridgev2.MatrixEdit) error {
+	if msg.Event.Type == event.EventSticker || msg.EditTarget.Metadata.(*MessageMetadata).RelayAttributionID != 0 {
+		return bridgev2.ErrEditsNotSupported
+	}
 	if msg.Content.BeeperViewLimited != nil || msg.EditTarget.Metadata.(*MessageMetadata).ViewLimited != nil {
 		return fmt.Errorf("%w: edits not allowed", bridgev2.ErrUnsupportedViewLimitedType)
 	}
@@ -817,7 +839,12 @@ func (tc *TelegramClient) HandleMatrixEdit(ctx context.Context, msg *bridgev2.Ma
 		return err
 	}
 
-	message, entities := matrixfmt.Parse(ctx, tc.matrixParser, msg.Content, msg.Portal, tc.getMaxMessageLength(ctx, msg.Content.MsgType.IsMedia()))
+	content, err := tc.formatRelayMessage(msg.Content, msg.OrigSender)
+	if err != nil {
+		return err
+	}
+
+	message, entities := matrixfmt.Parse(ctx, tc.matrixParser, content, msg.Portal, tc.getMaxMessageLength(ctx, content.MsgType.IsMedia()))
 
 	var newContentURI id.ContentURIString
 	req := tg.MessagesEditMessageRequest{
@@ -827,7 +854,7 @@ func (tc *TelegramClient) HandleMatrixEdit(ctx context.Context, msg *bridgev2.Ma
 		Entities:  entities,
 		ID:        targetID,
 	}
-	if msg.Content.MsgType.IsMedia() {
+	if content.MsgType.IsMedia() {
 		newContentURI = msg.Content.URL
 		if newContentURI == "" {
 			newContentURI = msg.Content.File.URL
@@ -837,13 +864,13 @@ func (tc *TelegramClient) HandleMatrixEdit(ctx context.Context, msg *bridgev2.Ma
 		} else {
 			log.Info().Msg("media URI changed, re-uploading media")
 			forceDocument, _ := msg.Event.Content.Raw["fi.mau.telegram.force_document"].(bool)
-			req.Media, err = tc.transferMediaToTelegram(ctx, msg.Content, false, false, forceDocument)
+			req.Media, err = tc.transferMediaToTelegram(ctx, content, false, false, forceDocument)
 			if err != nil {
 				return err
 			}
 		}
-	} else if !msg.Content.MsgType.IsText() {
-		return fmt.Errorf("%w %s", bridgev2.ErrUnsupportedMessageType, msg.Content.MsgType)
+	} else if !content.MsgType.IsText() {
+		return fmt.Errorf("%w %s", bridgev2.ErrUnsupportedMessageType, content.MsgType)
 	}
 	updates, err := tc.client.API().MessagesEditMessage(ctx, &req)
 	if err != nil {
@@ -854,7 +881,7 @@ func (tc *TelegramClient) HandleMatrixEdit(ctx context.Context, msg *bridgev2.Ma
 
 	switch sentMessage := updates.(type) {
 	case *tg.UpdateShortSentMessage:
-		hasher.Write([]byte(msg.Content.Body))
+		hasher.Write([]byte(content.Body))
 		hasher.Write(mediaHashID(ctx, sentMessage.Media))
 	case *tg.Updates:
 		var realSentMessage *tg.Message
@@ -900,7 +927,7 @@ func (tc *TelegramClient) HandleMatrixEdit(ctx context.Context, msg *bridgev2.Ma
 			hasher.Write([]byte(realSentMessage.Message))
 			hasher.Write(mediaHashID(ctx, realSentMessage.Media))
 		} else {
-			hasher.Write([]byte(msg.Content.Body))
+			hasher.Write([]byte(content.Body))
 		}
 	default:
 		return fmt.Errorf("unknown update from message response %T", updates)
@@ -915,30 +942,19 @@ func (tc *TelegramClient) HandleMatrixEdit(ctx context.Context, msg *bridgev2.Ma
 func (tc *TelegramClient) HandleMatrixMessageRemove(ctx context.Context, msg *bridgev2.MatrixMessageRemove) error {
 	if msg.Portal.RoomType == database.RoomTypeSpace {
 		return errSpacePortal
-	} else if dbMsg, err := tc.main.Bridge.DB.Message.GetPartByMXID(ctx, msg.TargetMessage.MXID); err != nil {
-		return err
-	} else if strings.HasPrefix(string(dbMsg.PartID), pollVotePartPrefix) {
-		return fmt.Errorf("%w: poll votes can't be deleted", bridgev2.ErrUnsupportedMessageType)
-	} else if _, messageID, err := ids.ParseMessageID(dbMsg.ID); err != nil {
-		return err
-	} else if peer, _, err := tc.inputPeerForPortalID(ctx, msg.Portal.ID); err != nil {
-		return err
-	} else if ch, ok := peer.(*tg.InputPeerChannel); ok {
-		_, err = tc.client.API().ChannelsDeleteMessages(ctx, &tg.ChannelsDeleteMessagesRequest{
-			Channel: &tg.InputChannel{
-				ChannelID:  ch.ChannelID,
-				AccessHash: ch.AccessHash,
-			},
-			ID: []int{messageID},
-		})
-		return tc.humaniseSendError(err)
-	} else {
-		_, err = tc.client.API().MessagesDeleteMessages(ctx, &tg.MessagesDeleteMessagesRequest{
-			Revoke: true,
-			ID:     []int{messageID},
-		})
-		return tc.humaniseSendError(err)
 	}
+	dbMsg, err := tc.main.Bridge.DB.Message.GetPartByMXID(ctx, msg.TargetMessage.MXID)
+	if err != nil {
+		return err
+	}
+	if strings.HasPrefix(string(dbMsg.PartID), pollVotePartPrefix) {
+		return fmt.Errorf("%w: poll votes can't be deleted", bridgev2.ErrUnsupportedMessageType)
+	}
+	peer, _, err := tc.inputPeerForPortalID(ctx, msg.Portal.ID)
+	if err != nil {
+		return err
+	}
+	return tc.deleteMappedTelegramMessage(ctx, tc.client.API(), msg.Portal, peer, dbMsg)
 }
 
 func (tc *TelegramClient) PreHandleMatrixReaction(ctx context.Context, msg *bridgev2.MatrixReaction) (bridgev2.MatrixReactionPreResponse, error) {
