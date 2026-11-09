@@ -37,14 +37,11 @@ jobs:
           }
       - name: Resolve inputs once and replay in an isolated clone
         id: replay
-        env:
-          REBUILD_GPG_PRIVATE_KEY: ${{ secrets.REBUILD_GPG_PRIVATE_KEY }}
-          REBUILD_GPG_PASSPHRASE: ${{ secrets.REBUILD_GPG_PASSPHRASE }}
-          REBUILD_GPG_FINGERPRINT: ${{ vars.REBUILD_GPG_FINGERPRINT }}
-          REBUILD_GIT_NAME: ${{ vars.REBUILD_GIT_NAME }}
-          REBUILD_GIT_EMAIL: ${{ vars.REBUILD_GIT_EMAIL }}
         run: |
           set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git config commit.gpgsign false
           expected=$(git rev-parse HEAD)
           echo "expected_main=$expected" >> "$GITHUB_OUTPUT"
           git remote add upstream https://github.com/mautrix/telegram.git
@@ -53,9 +50,6 @@ jobs:
           upstream=$(git rev-parse upstream/main)
           ci=$(git rev-parse origin/ci)
           git show "$ci:scripts/rebuild.py" > "$RUNNER_TEMP/rebuild.py"
-          git show "$ci:scripts/setup-ci-signing.sh" > "$RUNNER_TEMP/setup-ci-signing.sh"
-          bash "$RUNNER_TEMP/setup-ci-signing.sh"
-          export GNUPGHOME="$RUNNER_TEMP/rebuild-gnupg"
           args=(--source "$GITHUB_WORKSPACE" --upstream "$upstream" --ci "$ci")
           while IFS= read -r patch; do
             git fetch origin "+refs/heads/patch/$patch:refs/remotes/origin/patch/$patch"

@@ -77,11 +77,12 @@ def main():
         parser.error("source has tracked modifications; commit or preserve them before replay")
     subprocess.run(["git", "clone", "--no-local", "--no-hardlinks", "--no-checkout", str(source), str(target)], check=True, stdout=sys.stderr)
     git(target, "checkout", "--detach", args.upstream)
-    # Preserve the source repository's identity and signing policy in the clone.
-    for key in ("user.name", "user.email", "user.signingkey", "gpg.format", "gpg.program", "commit.gpgsign"):
+    # The owner's no-GPG policy is local to this disposable replay repository.
+    for key in ("user.name", "user.email"):
         setting = git(source, "config", "--get", key, check=False)
         if setting.returncode == 0:
             git(target, "config", key, setting.stdout.strip())
+    git(target, "config", "commit.gpgsign", "false")
     stamp = git(target, "show", "-s", "--format=%ct", args.upstream).stdout.strip() + " +0000"
     env = dict(os.environ, GIT_AUTHOR_DATE=stamp, GIT_COMMITTER_DATE=stamp)
 

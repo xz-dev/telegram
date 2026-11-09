@@ -85,36 +85,21 @@ class ReplayTests(unittest.TestCase):
             env=self.env, text=True)
         self.assertEqual(json.loads(contents)["upstream"], self.upstream)
 
-    def test_signed_source_policy_is_preserved_in_generated_commits(self):
-        home = self.root / "gnupg"
-        home.mkdir(mode=0o700)
-        self.env["GNUPGHOME"] = str(home)
-        def gpg(*args):
-            return subprocess.check_output(["gpg", "--batch", *args], env=self.env,
-                                           text=True, stderr=subprocess.PIPE)
-        gpg("--pinentry-mode", "loopback", "--passphrase", "", "--quick-generate-key",
-            "Fixture <fixture@example.invalid>", "ed25519", "sign", "0")
-        self.addCleanup(subprocess.run, ["gpgconf", "--homedir", str(home), "--kill", "gpg-agent"],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        fingerprint = next(line.split(":")[9] for line in gpg("--with-colons", "--list-secret-keys").splitlines()
-                           if line.startswith("fpr:"))
-        self.git("config", "user.name", "Fixture")
-        self.git("config", "user.email", "fixture@example.invalid")
-        self.git("config", "user.signingkey", fingerprint)
+    def test_project_no_signing_policy_does_not_change_source_config(self):
         self.git("config", "commit.gpgsign", "true")
+        self.git("config", "gpg.program", "/nonexistent/fixture-signer")
         result = self.run_driver()
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.git("config", "commit.gpgsign"), "true")
+        self.assertEqual(self.git("config", "gpg.program"), "/nonexistent/fixture-signer")
         candidate = self.root / "candidate"
-        def candidate_git(*args):
-            return subprocess.check_output(["git", "-C", str(candidate), *args],
-                                           env=self.env, text=True, stderr=subprocess.PIPE).strip()
-        self.assertEqual(candidate_git("config", "user.signingkey"), fingerprint)
-        self.assertEqual(candidate_git("config", "commit.gpgsign"), "true")
-        commits = candidate_git("rev-list", self.upstream + "..HEAD").splitlines()
-        self.assertEqual(len(commits), 3)
-        for commit in commits:
-            candidate_git("verify-commit", commit)
-            self.assertEqual(candidate_git("show", "-s", "--format=%GF", commit), fingerprint)
+        policy = subprocess.check_output(["git", "-C", str(candidate), "config", "commit.gpgsign"],
+                                         env=self.env, text=True).strip()
+        self.assertEqual(policy, "false")
+        signatures = subprocess.check_output(
+            ["git", "-C", str(candidate), "log", self.upstream + "..HEAD", "--format=%G?"],
+            env=self.env, text=True).splitlines()
+        self.assertEqual(signatures, ["N", "N", "N"])
 
     def test_refuses_existing_nested_and_git_targets_without_touching_them(self):
         for target in [self.source, self.source / "nested", self.source / ".git/nested", self.root]:
