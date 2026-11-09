@@ -19,6 +19,9 @@ No upstream PR.
 - Given matching successful native outputs, a manual release publishes a new
   prerelease with checksums, exact source/inputs and image digest. Mismatched
   outputs or any existing release/tag/image version stop; no overwrite retry.
+- Given successful attribution followed by a lost response or definite media
+  rejection, retain the live name and exact-ID record; retry the same event
+  without resending/deleting the name. An abandoned send may leave that name.
 - Given daily sync, successful native gates permit only an explicit leased main
   update, not a release. Missing sync auth is an explicit failure, not fallback.
 

@@ -173,7 +173,17 @@ def publish(args):
     # Create the draft before any remote image mutation. Failures leave a visible
     # draft and possibly orphaned immutable image tags, never a completed release.
     notes = args.assets / "release-notes.md"
-    notes.write_text("Personal test prerelease. Source: `" + args.source_sha + "`.\n\nDo not deploy without backing up your config and database.\n")
+    notes.write_text(
+        "Personal test prerelease. Source: `" + args.source_sha + "`.\n\n"
+        "Back up your config and database before deploying.\n\n"
+        "## Known relay limits\n\n"
+        "Relayed stickers use a separate sender-name message. Reply to the sticker, "
+        "not that auxiliary name, for Matrix reply mapping. Sticker edits are rejected.\n\n"
+        "After the name is sent, a sticker error keeps the name and its retry record: "
+        "a lost response does not prove non-delivery. Retrying the same Matrix event "
+        "reuses that name. A standalone name may remain if delivery never completes.\n\n"
+        "This release does not fix GIF semi-transparency.\n"
+    )
     run("gh", "release", "create", args.version, "--repo", REPO, "--target", args.source_sha,
         "--draft", "--prerelease", "--title", args.version, "--notes-file", str(notes))
     digests = {}

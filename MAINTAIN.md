@@ -103,7 +103,11 @@ The sticker is the canonical Matrix mapping. A separate attribution message
 is tracked for exact-ID echo suppression and deletion. Replies in Telegram to
 that auxiliary attribution have no Matrix reply target; reply to the sticker
 itself. Sticker edits are rejected instead of silently changing media type.
-This release does not improve GIF semi-transparency.
+This release does not improve GIF semi-transparency. Once a name has been sent,
+media errors retain that name and its mapping, because a lost response does not
+prove Telegram rejected the sticker. Retrying the same Matrix event reuses the
+name and the sticker's deduplication ID. If delivery is never retried or never
+succeeds, a standalone name may remain; it is not automatically deleted.
 
 ## Authentication and signing
 
