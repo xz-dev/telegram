@@ -72,6 +72,19 @@ class ReplayTests(unittest.TestCase):
         self.patch = self.commit("changed input")
         self.assertEqual(self.run_driver("--check-current", tip, target=False).returncode, 1)
 
+    def test_generated_provenance_is_recorded_even_if_globally_ignored(self):
+        excludes = self.root / "global-ignore"
+        excludes.write_text(".downstream*\n")
+        config = self.root / "global-config"
+        config.write_text("[core]\n\texcludesFile = " + str(excludes) + "\n")
+        self.env["GIT_CONFIG_GLOBAL"] = str(config)
+        result = self.run_driver()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        contents = subprocess.check_output(
+            ["git", "-C", str(self.root / "candidate"), "show", "HEAD:.downstream-inputs.json"],
+            env=self.env, text=True)
+        self.assertEqual(json.loads(contents)["upstream"], self.upstream)
+
     def test_signed_source_policy_is_preserved_in_generated_commits(self):
         home = self.root / "gnupg"
         home.mkdir(mode=0o700)

@@ -107,7 +107,7 @@ def main():
             raise ValueError("patch conflict: " + name + "\n" + merged.stderr + merged.stdout)
         commit("merge patch/" + name + " branch")
     (target / MARKER).write_text(marker)
-    git(target, "add", "--", MARKER)
+    git(target, "add", "--force", "--", MARKER)
     commit(subject)
     print(git(target, "rev-parse", "HEAD").stdout.strip())
     return 0
