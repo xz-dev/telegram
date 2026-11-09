@@ -67,8 +67,8 @@ and actual Go version are recorded per build.
 
 ## Manual self-use releases
 
-For the first bootstrap or an unmerged maintenance change, push a signed,
-complete replay to `candidate/<name>`. `Validate release candidate` builds and
+For the first bootstrap or an unmerged maintenance change, push a complete
+replay to `candidate/<name>`. `Validate release candidate` builds and
 smoke-tests both native architectures from that exact candidate without
 updating main, creating a Release or pushing any image. Adopt only the tested
 candidate SHA after review. Once installed on main, the validation workflow
@@ -117,21 +117,14 @@ succeeds, a standalone name may remain; it is not automatically deleted.
   no existing local gh credential is copied into repository secrets.
 - Manual release uses the job's `GITHUB_TOKEN` with contents/packages write.
   It does not require the sync PAT. GHCR login uses that same authorized token.
-- Local maintenance and generated integration commits retain GPG signing.
-  The replay driver copies the source repository's identity/signing settings;
-  it never disables signing. Unlock the local signing key when prompted.
-- Automated replay additionally needs a dedicated `REBUILD_GPG_PRIVATE_KEY`
-  secret (armored private signing key), optional `REBUILD_GPG_PASSPHRASE`, and
-  repository variables `REBUILD_GPG_FINGERPRINT`, `REBUILD_GIT_NAME`, and
-  `REBUILD_GIT_EMAIL`. Provision these explicitly; tooling never exports or
-  uploads the local key. Missing signer configuration stops the sync before
-  any commit or main update. Manual release does not create commits and does
-  not require these secrets when publishing an already signed local rebuild.
-- Fixture tests use isolated throwaway Git histories and do not change the
-  maintainer's Git configuration. Unsigned fixtures reproduce the same commit
-  ID; signed replay preserves exact inputs and tree, but GPG signature times
-  can give a fresh replay a different commit ID. The complete input-vector
-  check prevents unnecessary main rewrites in either case.
+- The owner explicitly waived GPG signing for this fork. Local maintenance
+  commits use repository-local `commit.gpgsign=false`; generated replay clones
+  and CI also set that value locally. Never change global Git signing settings.
+  No GPG private key, passphrase, signer variable or signing agent is needed.
+- Fixture tests verify that replay does not change the source repository's
+  signing configuration even when that source would require an unavailable
+  signer. Exact inputs reproduce the integration tip without signing-time
+  differences, and the complete input-vector check avoids unnecessary updates.
 
 To add a patch, create and validate its owning branch, add it to `PATCH_ORDER`,
 update this guide, and rerun standalone and integrated gates. To retire one,
