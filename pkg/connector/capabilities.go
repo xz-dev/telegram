@@ -228,7 +228,7 @@ func viewLimitedFileCaps(base event.FileFeatureMap) event.FileFeatureMap {
 var telegramTimers = makeTimerList()
 
 func (tc *TelegramClient) GetCapabilities(ctx context.Context, portal *bridgev2.Portal) *event.RoomFeatures {
-	baseID := "fi.mau.telegram.capabilities.2026_10_29"
+	baseID := "fi.mau.telegram.capabilities.2026_10_29+relay_stickers"
 	feat := &event.RoomFeatures{
 		Formatting:          formattingCaps,
 		File:                fileCaps,
@@ -351,13 +351,8 @@ func (tc *TelegramClient) GetCapabilities(ctx context.Context, portal *bridgev2.
 	}
 
 	feat.ID = baseID
-	// Telegram has no per-message displaynames, so the generic relay
-	// formatting in bridgev2 can't be used. Declaring per-message profile
-	// relay support lets the connector keep stickers as stickers instead
-	// of letting the library downgrade them to captioned images; the
-	// connector then applies the relay formatting itself for other
-	// message types and sends the attribution as a separate message for
-	// stickers.
+	// bridgev2 must preserve sticker events; the connector formats other
+	// relayed messages and sends sticker attribution separately.
 	feat.PerMessageProfileRelay = true
 	return feat
 }
