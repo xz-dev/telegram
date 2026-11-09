@@ -6,8 +6,9 @@ from pathlib import Path
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from release import collect, valid_version
+from release import collect, publish, valid_version
 
 
 class ReleaseAssetTests(unittest.TestCase):
@@ -51,6 +52,24 @@ class ReleaseAssetTests(unittest.TestCase):
         path.write_text(json.dumps(info))
         with self.assertRaisesRegex(ValueError, "archive binary"):
             collect(self.args)
+
+    def test_publication_checks_canonical_repository_url_before_tag_collision(self):
+        urls = []
+        def open_api(request):
+            urls.append(request.full_url)
+            self.assertEqual(request.headers["Authorization"], "Bearer fixture-token")
+            if len(urls) == 1:
+                self.assertEqual(request.full_url, "https://api.github.com/repos/xz-dev/telegram")
+                return io.BytesIO(b'{"full_name":"xz-dev/telegram"}')
+            return io.BytesIO(b'{"ref":"refs/tags/existing"}')
+        with patch.dict("os.environ", {"GITHUB_REPOSITORY": "xz-dev/telegram", "GH_TOKEN": "fixture-token"}), \
+                patch("release.urllib.request.urlopen", side_effect=open_api), \
+                patch("release.run") as mutate:
+            with self.assertRaisesRegex(ValueError, "release/tag already exists"):
+                publish(self.args)
+            mutate.assert_not_called()
+        self.assertEqual(urls, ["https://api.github.com/repos/xz-dev/telegram",
+                               "https://api.github.com/repos/xz-dev/telegram/git/ref/tags/" + self.args.version])
 
     def test_version_is_downstream_and_not_a_shell_or_tag_injection(self):
         self.assertEqual(valid_version(self.args.version), self.args.version)

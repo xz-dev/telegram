@@ -139,7 +139,7 @@ def publish(args):
         raise ValueError("an authorized GitHub publication token is required")
 
     def api(path):
-        request = urllib.request.Request("https://api.github.com/repos/" + REPO + "/" + path,
+        request = urllib.request.Request(("https://api.github.com/repos/" + REPO + "/" + path).rstrip("/"),
                                          headers={"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json"})
         try:
             with urllib.request.urlopen(request) as response:
