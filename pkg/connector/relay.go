@@ -8,7 +8,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"math"
 
@@ -98,15 +97,11 @@ func (tc *TelegramClient) sendRelaySticker(
 	if parseErr != nil {
 		return nil, parseErr
 	}
-	cleanup := func(cause error) error {
-		if deleteErr := deleteTelegramMessages(ctx, api, req.Peer, []int{attributionID}); deleteErr != nil {
-			return errors.Join(cause, fmt.Errorf("failed to remove relay attribution %d: %w", attributionID, deleteErr))
-		}
-		return errors.Join(cause, tc.main.Bridge.DB.Message.DeleteAllParts(ctx, msg.Portal.Receiver, attributionDB.ID))
-	}
 	if err != nil {
-		return nil, cleanup(fmt.Errorf("failed to track relay attribution: %w", err))
+		return nil, fmt.Errorf("failed to track relay attribution: %w", err)
 	}
+	// A send error may mean only that the response was lost. Keep the live
+	// attribution and its deduplication ID for retry instead of compensating.
 	// Stickers have no captions, including their Matrix alt text.
 	req.Message, req.Entities = "", nil
 	updates, err = api.MessagesSendMedia(ctx, req)
@@ -117,7 +112,7 @@ func (tc *TelegramClient) sendRelaySticker(
 		}
 	}
 	if err != nil {
-		return nil, cleanup(tc.humaniseSendError(err))
+		return nil, tc.humaniseSendError(err)
 	}
 	uri := msg.Content.URL
 	if uri == "" && msg.Content.File != nil {

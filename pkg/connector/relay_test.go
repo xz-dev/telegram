@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io"
 	"testing"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -147,48 +148,57 @@ func TestRelayStickerAttributionFailureStopsSend(t *testing.T) {
 	require.Equal(t, 1, calls, "do not send an unattributed sticker after a failed attribution")
 }
 
-func TestRelayStickerFailureRemovesAttribution(t *testing.T) {
-	for _, cleanupFails := range []bool{false, true} {
-		t.Run(map[bool]string{false: "cleanup succeeds", true: "cleanup fails visibly"}[cleanupFails], func(t *testing.T) {
+func TestRelayStickerFailureKeepsAttributionForRetry(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+	}{
+		{"accepted but response lost", io.ErrUnexpectedEOF},
+		{"definite media rejection", tgerr.New(400, "MEDIA_INVALID")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			tc, msg, req := relayFixture(t)
 			var calls []string
+			var stickerRandomID int64
+			mediaCalls := 0
 			api := tg.NewClient(relayInvoker(func(_ context.Context, input bin.Encoder, output bin.Decoder) error {
 				switch request := input.(type) {
 				case *tg.MessagesSendMessageRequest:
 					calls = append(calls, "attribution")
+					if len(calls) != 1 {
+						return tgerr.New(400, "RANDOM_ID_DUPLICATE")
+					}
 					relayUpdates(output, 21)
 				case *tg.MessagesSendMediaRequest:
 					calls = append(calls, "sticker")
-					return errors.New("sticker rejected")
-				case *tg.MessagesDeleteMessagesRequest:
-					calls = append(calls, "cleanup")
-					require.Equal(t, []int{21}, request.ID)
-					require.True(t, request.Revoke)
-					if cleanupFails {
-						return errors.New("deletion rejected")
+					mediaCalls++
+					if mediaCalls == 1 {
+						stickerRandomID = request.RandomID
+						return test.err
 					}
+					require.Equal(t, stickerRandomID, request.RandomID)
+					relayUpdates(output, 22)
 				default:
-					t.Fatalf("unexpected RPC %T", request)
+					t.Fatalf("must not delete live attribution after uncertain or retryable delivery: %T", request)
 				}
 				return nil
 			}))
 			resp, err := tc.sendRelaySticker(t.Context(), api, msg, req, nil)
 			require.Error(t, err)
 			require.Nil(t, resp)
-			require.Equal(t, []string{"attribution", "sticker", "cleanup"}, calls)
-			aux, lookupErr := tc.main.Bridge.DB.Message.GetPartByID(t.Context(), msg.Portal.Receiver, "21", "")
-			require.NoError(t, lookupErr)
-			if cleanupFails {
-				require.ErrorContains(t, err, "failed to remove relay attribution 21")
-				require.NotNil(t, aux, "retain exact-ID echo suppression when remote cleanup failed")
-			} else {
-				require.Nil(t, aux)
-			}
+			aux, err := tc.main.Bridge.DB.Message.GetPartByID(t.Context(), msg.Portal.Receiver, "21", "")
+			require.NoError(t, err)
+			require.NotNil(t, aux, "retain the live name and its exact-ID echo mapping")
+			resp, err = tc.sendRelaySticker(t.Context(), api, msg, req, nil)
+			require.NoError(t, err)
+			require.Equal(t, networkid.MessageID("22"), resp.DB.ID)
+			require.Equal(t, 21, resp.DB.Metadata.(*MessageMetadata).RelayAttributionID)
+			require.Equal(t, []string{"attribution", "sticker", "sticker"}, calls)
 		})
 	}
 }
 
-func TestRelayStickerTrackingFailureStopsAndCleansUp(t *testing.T) {
+func TestRelayStickerTrackingFailureStopsWithoutDeletingAttribution(t *testing.T) {
 	tc, msg, req := relayFixture(t)
 	_, err := tc.main.Bridge.DB.Exec(t.Context(), `CREATE TRIGGER reject_message BEFORE INSERT ON message
 		BEGIN SELECT RAISE(FAIL, 'cannot track message'); END`)
@@ -199,18 +209,15 @@ func TestRelayStickerTrackingFailureStopsAndCleansUp(t *testing.T) {
 		case *tg.MessagesSendMessageRequest:
 			calls = append(calls, "attribution")
 			relayUpdates(output, 21)
-		case *tg.MessagesDeleteMessagesRequest:
-			calls = append(calls, "cleanup")
-			require.Equal(t, []int{21}, request.ID)
 		default:
-			t.Fatalf("untracked attribution must not be followed by a sticker: %T", request)
+			t.Fatalf("untracked attribution must not be deleted or followed by a sticker: %T", request)
 		}
 		return nil
 	}))
 	resp, err := tc.sendRelaySticker(t.Context(), api, msg, req, nil)
 	require.ErrorContains(t, err, "failed to track relay attribution")
 	require.Nil(t, resp)
-	require.Equal(t, []string{"attribution", "cleanup"}, calls)
+	require.Equal(t, []string{"attribution"}, calls)
 }
 
 func TestRelayStickerExpiredReferenceRetriesOnlyMedia(t *testing.T) {
