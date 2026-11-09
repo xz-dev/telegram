@@ -1,4 +1,10 @@
 # mautrix-telegram
+
+> **Downstream fork notice** — this is `xz-dev/telegram`, a personal
+> downstream of `mautrix/telegram` that carries a few extra patches being
+> dogfooded before upstreaming. See [`MAINTAIN.md`](MAINTAIN.md) for the
+> branch model and patch list.
+
 ![Languages](https://img.shields.io/github/languages/top/mautrix/telegram.svg)
 [![License](https://img.shields.io/github/license/mautrix/telegram.svg)](LICENSE)
 [![Release](https://img.shields.io/github/release/mautrix/telegram/all.svg)](https://github.com/mautrix/telegram/releases)
