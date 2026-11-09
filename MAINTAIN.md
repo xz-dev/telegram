@@ -67,6 +67,13 @@ and actual Go version are recorded per build.
 
 ## Manual self-use releases
 
+For the first bootstrap or an unmerged maintenance change, push a signed,
+complete replay to `candidate/<name>`. `Validate release candidate` builds and
+smoke-tests both native architectures from that exact candidate without
+updating main, creating a Release or pushing any image. Adopt only the tested
+candidate SHA after review. Once installed on main, the validation workflow
+can also be dispatched with an optional exact candidate SHA.
+
 `Publish self-use release` is **manual only**, and accepts only generated main.
 A dispatch freezes that main SHA into a Git bundle; moving main later does not
 change the source being built. Empty version input derives a unique downstream
