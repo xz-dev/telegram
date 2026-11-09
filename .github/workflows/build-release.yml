@@ -1,0 +1,96 @@
+name: Build release candidate
+
+on:
+  workflow_call:
+    inputs:
+      source_artifact:
+        type: string
+        required: true
+      source_sha:
+        type: string
+        required: true
+      version:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            builder: linux-amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            builder: linux-arm64-native
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ${{ inputs.source_artifact }}
+          path: ${{ runner.temp }}/source-input
+      - name: Materialize the exact candidate
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          git clone "$RUNNER_TEMP/source-input/source.bundle" "$RUNNER_TEMP/source"
+          git -C "$RUNNER_TEMP/source" checkout --detach "$SOURCE_SHA"
+          test "$(git -C "$RUNNER_TEMP/source" rev-parse HEAD)" = "$SOURCE_SHA"
+          python3 -m unittest discover -s "$RUNNER_TEMP/source/scripts" -p 'test_*.py' -v
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: ${{ runner.temp }}/source/go.mod
+          cache-dependency-path: ${{ runner.temp }}/source/go.sum
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Test and build a static binary natively
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          ARCH: ${{ matrix.arch }}
+          BUILDER_TAG: ${{ matrix.builder }}
+        run: |
+          set -euo pipefail
+          builder="dock.mau.dev/tulir/gomuks-build-docker:$BUILDER_TAG"
+          digest=$(docker buildx imagetools inspect "$builder" --format '{{.Manifest.Digest}}')
+          builder="dock.mau.dev/tulir/gomuks-build-docker@$digest"
+          docker buildx build "$RUNNER_TEMP/source" \
+            --file "$RUNNER_TEMP/source/scripts/release-build.Dockerfile" \
+            --build-arg "BUILDER_IMAGE=$builder" \
+            --build-arg "SOURCE_SHA=$SOURCE_SHA" \
+            --build-arg "RELEASE_VERSION=$RELEASE_VERSION" \
+            --target artifacts --output "type=local,dest=$RUNNER_TEMP/built"
+          python3 "$RUNNER_TEMP/source/scripts/release.py" package \
+            --source "$RUNNER_TEMP/source" --built "$RUNNER_TEMP/built" \
+            --output "$RUNNER_TEMP/assets" --arch "$ARCH" \
+            --version "$RELEASE_VERSION" --builder "$builder"
+      - name: Package and smoke-test the matching runtime image
+        env:
+          ARCH: ${{ matrix.arch }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/runtime"
+          cp "$RUNNER_TEMP/built/mautrix-telegram" "$RUNNER_TEMP/runtime/"
+          cp "$RUNNER_TEMP/source/Dockerfile.ci" "$RUNNER_TEMP/runtime/Dockerfile"
+          cp "$RUNNER_TEMP/source/docker-run.sh" "$RUNNER_TEMP/runtime/"
+          docker build "$RUNNER_TEMP/runtime" --tag "telegram-release:$ARCH" \
+            --build-arg EXECUTABLE=./mautrix-telegram \
+            --label "org.opencontainers.image.source=https://github.com/xz-dev/telegram" \
+            --label "org.opencontainers.image.revision=$SOURCE_SHA" \
+            --label "org.opencontainers.image.version=$RELEASE_VERSION"
+          binary_sha=$(sha256sum "$RUNNER_TEMP/built/mautrix-telegram" | cut -d ' ' -f 1)
+          sh "$RUNNER_TEMP/source/scripts/smoke-image.sh" "telegram-release:$ARCH" "$binary_sha"
+          docker save --output "$RUNNER_TEMP/assets/image-linux-$ARCH.tar" "telegram-release:$ARCH"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-linux-${{ matrix.arch }}
+          path: ${{ runner.temp }}/assets/
+          if-no-files-found: error
+          retention-days: 7
