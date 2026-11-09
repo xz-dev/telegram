@@ -1,0 +1,53 @@
+name: Validate release candidate
+
+on:
+  push:
+    branches: ['candidate/**']
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: 'Optional exact generated candidate SHA; empty validates this workflow commit'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-validation-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.repository == 'xz-dev/telegram'
+    runs-on: ubuntu-24.04
+    outputs:
+      source_sha: ${{ steps.prepare.outputs.source_sha }}
+      version: ${{ steps.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Freeze the exact candidate without updating main
+        id: prepare
+        run: |
+          set -euo pipefail
+          python3 scripts/release.py prepare --source "$GITHUB_WORKSPACE" \
+            --output "$RUNNER_TEMP/source-input" > "$RUNNER_TEMP/prepared.json"
+          python3 -c 'import json,os; d=json.load(open(os.environ["RUNNER_TEMP"]+"/prepared.json")); open(os.environ["GITHUB_OUTPUT"],"a").write("source_sha="+d["source_commit"]+"\nversion="+d["version"]+"\n")'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: candidate-source
+          path: ${{ runner.temp }}/source-input/
+          if-no-files-found: error
+          retention-days: 7
+
+  validate:
+    needs: prepare
+    uses: ./.github/workflows/build-release.yml
+    with:
+      source_artifact: candidate-source
+      source_sha: ${{ needs.prepare.outputs.source_sha }}
+      version: ${{ needs.prepare.outputs.version }}
