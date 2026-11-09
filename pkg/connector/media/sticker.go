@@ -136,7 +136,9 @@ func (c *AnimatedStickerConfig) convertWebm(ctx context.Context, src *os.File) *
 		newPath, err = ffmpeg.ConvertPath(
 			ctx, src.Name(), ".gif",
 			[]string{"-c:v", "libvpx-vp9"},
-			[]string{"-vf", "split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse"},
+			// GIF has no semi-transparency: binarize alpha at 128 so that
+			// semi-transparent pixels don't get flattened into opaque ones.
+			[]string{"-vf", "split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse=alpha_threshold=128"},
 			false,
 		)
 	case "webp":
