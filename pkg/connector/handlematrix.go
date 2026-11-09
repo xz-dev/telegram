@@ -509,6 +509,33 @@ func (tc *TelegramClient) getMaxMessageLength(ctx context.Context, isMedia bool)
 	return
 }
 
+func (tc *TelegramClient) applyRelayFormatting(ctx context.Context, content *event.MessageEventContent, origSender *bridgev2.OrigSender) (*event.MessageEventContent, error) {
+	if origSender == nil {
+		return content, nil
+	}
+	formatted, err := tc.main.Bridge.Config.Relay.FormatMessage(content, origSender)
+	if err != nil {
+		return nil, err
+	}
+	return formatted, nil
+}
+
+func (tc *TelegramClient) sendRelayAttribution(ctx context.Context, peer tg.InputPeerClass, replyTo tg.InputReplyToClass, origSender *bridgev2.OrigSender) {
+	name := tc.main.Bridge.Config.Relay.FormatName(origSender)
+	if name == "" {
+		return
+	}
+	_, err := tc.client.API().MessagesSendMessage(ctx, &tg.MessagesSendMessageRequest{
+		Peer:      peer,
+		NoWebpage: true,
+		Message:   name,
+		ReplyTo:   replyTo,
+	})
+	if err != nil {
+		zerolog.Ctx(ctx).Warn().Err(err).Msg("Failed to send relay attribution message before sticker")
+	}
+}
+
 func (tc *TelegramClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (resp *bridgev2.MatrixMessageResponse, err error) {
 	if msg.Portal.RoomType == database.RoomTypeSpace {
 		return nil, errSpacePortal
@@ -537,13 +564,30 @@ func (tc *TelegramClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2
 
 	noWebpage := msg.Content.BeeperLinkPreviews != nil && len(msg.Content.BeeperLinkPreviews) == 0
 
-	message, entities := matrixfmt.Parse(ctx, tc.matrixParser, msg.Content, msg.Portal, tc.getMaxMessageLength(ctx, msg.Content.MsgType.IsMedia()))
+	// PerMessageProfileRelay is declared in the room capabilities, so the
+	// library skipped the generic relay formatting. Apply it here instead
+	// for all non-sticker messages. Stickers can't have captions on
+	// Telegram, so their attribution is sent as a separate message below
+	// and the content must not be reformatted.
+	content := msg.Content
+	if msg.OrigSender != nil && msg.Event.Type != event.EventSticker {
+		content, err = tc.applyRelayFormatting(ctx, msg.Content, msg.OrigSender)
+		if err != nil {
+			log.Err(err).Msg("Failed to format message for relaying")
+			return nil, err
+		}
+	}
+
+	message, entities := matrixfmt.Parse(ctx, tc.matrixParser, content, msg.Portal, tc.getMaxMessageLength(ctx, content.MsgType.IsMedia()))
 
 	replyTo := makeInputReplyTo(ctx, msg.ReplyTo, topicID)
 	randomID := parseRandomID(msg.InputTransactionID)
 
 	var updates tg.UpdatesClass
 	if msg.Event.Type == event.EventSticker {
+		if msg.OrigSender != nil {
+			tc.sendRelayAttribution(ctx, peer, replyTo, msg.OrigSender)
+		}
 		mediaReq := &tg.MessagesSendMediaRequest{
 			Peer:     peer,
 			Message:  message,
@@ -817,7 +861,24 @@ func (tc *TelegramClient) HandleMatrixEdit(ctx context.Context, msg *bridgev2.Ma
 		return err
 	}
 
-	message, entities := matrixfmt.Parse(ctx, tc.matrixParser, msg.Content, msg.Portal, tc.getMaxMessageLength(ctx, msg.Content.MsgType.IsMedia()))
+	// Same as in HandleMatrixMessage: the library skipped the generic
+	// relay formatting, so apply it here for edits. Sticker edits are
+	// downgraded to images the same way the library did, since a relayed
+	// sticker can't be edited into another sticker.
+	content := msg.Content
+	if msg.OrigSender != nil {
+		if msg.Event.Type == event.EventSticker {
+			contentCopy := *content
+			content = &contentCopy
+			content.MsgType = event.MsgImage
+		}
+		content, err = tc.applyRelayFormatting(ctx, content, msg.OrigSender)
+		if err != nil {
+			return err
+		}
+	}
+
+	message, entities := matrixfmt.Parse(ctx, tc.matrixParser, content, msg.Portal, tc.getMaxMessageLength(ctx, content.MsgType.IsMedia()))
 
 	var newContentURI id.ContentURIString
 	req := tg.MessagesEditMessageRequest{
@@ -827,7 +888,7 @@ func (tc *TelegramClient) HandleMatrixEdit(ctx context.Context, msg *bridgev2.Ma
 		Entities:  entities,
 		ID:        targetID,
 	}
-	if msg.Content.MsgType.IsMedia() {
+	if content.MsgType.IsMedia() {
 		newContentURI = msg.Content.URL
 		if newContentURI == "" {
 			newContentURI = msg.Content.File.URL
@@ -837,13 +898,13 @@ func (tc *TelegramClient) HandleMatrixEdit(ctx context.Context, msg *bridgev2.Ma
 		} else {
 			log.Info().Msg("media URI changed, re-uploading media")
 			forceDocument, _ := msg.Event.Content.Raw["fi.mau.telegram.force_document"].(bool)
-			req.Media, err = tc.transferMediaToTelegram(ctx, msg.Content, false, false, forceDocument)
+			req.Media, err = tc.transferMediaToTelegram(ctx, content, false, false, forceDocument)
 			if err != nil {
 				return err
 			}
 		}
-	} else if !msg.Content.MsgType.IsText() {
-		return fmt.Errorf("%w %s", bridgev2.ErrUnsupportedMessageType, msg.Content.MsgType)
+	} else if !content.MsgType.IsText() {
+		return fmt.Errorf("%w %s", bridgev2.ErrUnsupportedMessageType, content.MsgType)
 	}
 	updates, err := tc.client.API().MessagesEditMessage(ctx, &req)
 	if err != nil {

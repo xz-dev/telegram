@@ -351,6 +351,14 @@ func (tc *TelegramClient) GetCapabilities(ctx context.Context, portal *bridgev2.
 	}
 
 	feat.ID = baseID
+	// Telegram has no per-message displaynames, so the generic relay
+	// formatting in bridgev2 can't be used. Declaring per-message profile
+	// relay support lets the connector keep stickers as stickers instead
+	// of letting the library downgrade them to captioned images; the
+	// connector then applies the relay formatting itself for other
+	// message types and sends the attribution as a separate message for
+	// stickers.
+	feat.PerMessageProfileRelay = true
 	return feat
 }
 
